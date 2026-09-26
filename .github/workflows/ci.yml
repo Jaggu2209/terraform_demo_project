@@ -1,6 +1,7 @@
 name: AWS OIDC Test
 
 on:
+  push:
   workflow_dispatch:
 
 permissions:
@@ -12,26 +13,63 @@ jobs:
     runs-on: self-hosted
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Debug OIDC claims
+      - name: Get OIDC claims
         shell: bash
         run: |
+          set -e
+
+          echo "Requesting GitHub OIDC token..."
+
           RESPONSE=$(curl -sS \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            -H "Accept: application/json" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com")
 
-          ID_TOKEN=$(echo "$RESPONSE" | jq -r '.value')
+          echo "OIDC response received"
 
+          # Extract token without jq
+          ID_TOKEN=$(python3 -c '
+          import sys, json
+          data=json.load(sys.stdin)
+          print(data["value"])
+          ' <<< "$RESPONSE")
+
+          echo "OIDC token received successfully"
+
+          # Extract JWT payload
           PAYLOAD=$(echo "$ID_TOKEN" | cut -d '.' -f 2)
 
-          case $((${#PAYLOAD} % 4)) in
-            2) PAYLOAD="${PAYLOAD}==" ;;
-            3) PAYLOAD="${PAYLOAD}=" ;;
-          esac
+          # Decode JWT payload
+          python3 -c '
+          import sys
+          import base64
+          import json
 
-          echo "$PAYLOAD" | tr '_-' '/+' | base64 -d 2>/dev/null | jq .
+          payload = sys.stdin.read().strip()
+
+          payload += "=" * (-len(payload) % 4)
+
+          decoded = base64.urlsafe_b64decode(payload)
+
+          claims = json.loads(decoded)
+
+          print("")
+          print("========== OIDC CLAIMS ==========")
+          print("iss :", claims.get("iss"))
+          print("aud :", claims.get("aud"))
+          print("sub :", claims.get("sub"))
+          print("repository :", claims.get("repository"))
+          print("repository_id :", claims.get("repository_id"))
+          print("repository_owner :", claims.get("repository_owner"))
+          print("repository_owner_id :", claims.get("repository_owner_id"))
+          print("ref :", claims.get("ref"))
+          print("event_name :", claims.get("event_name"))
+          print("=================================")
+          ' <<< "$PAYLOAD"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
